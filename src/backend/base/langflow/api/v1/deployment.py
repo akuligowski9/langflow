@@ -89,6 +89,12 @@ class DeploymentRedeployResponse(DeploymentRedeployResult):
     message: str = Field(description="Operation status message")
 
 
+class DeploymentCloneRequest(BaseModel):
+    """Clone deployment request."""
+
+    deployment_type: DeploymentType = Field(description="The type of deployment to clone")
+
+
 class DeploymentCloneResponse(DeploymentItem):
     """Clone deployment response."""
 
@@ -187,6 +193,10 @@ async def deploy(
     db: DbSession,
 ):
     """Create a deployment using the provider routing ID."""
+    # print(f"Deploying deployment with provider ID: {provider_id}")
+    # print(f"Payload: {payload}")
+    # print(f"User: {user}")
+    # print(f"DB: {db}")
     deployment_adapter = _resolve_deployment_adapter(provider_id)
     try:
         result = await deployment_adapter.create_deployment(
@@ -287,13 +297,9 @@ async def update_deployment(
 ):
     """Update a deployment for a provider routing ID."""
     deployment_adapter = _resolve_deployment_adapter(provider_id)
-    if str(payload.id) != deployment_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Payload id '{payload.id}' must match path deployment_id '{deployment_id}'.",
-        )
     try:
         update_result = await deployment_adapter.update_deployment(
+            deployment_id=deployment_id,
             update_data=payload,
             user_id=user.id,
             db=db,
@@ -375,6 +381,7 @@ async def redeploy_deployment(
 async def clone_deployment(
     provider_id: DeploymentProviderId,
     deployment_id: str,
+    payload: DeploymentCloneRequest,
     db: DbSession,
     user: CurrentActiveUser,
 ):
@@ -383,6 +390,7 @@ async def clone_deployment(
     try:
         clone_result = await deployment_adapter.clone_deployment(
             deployment_id=deployment_id,
+            deployment_type=payload.deployment_type,
             user_id=user.id,
             db=db,
         )

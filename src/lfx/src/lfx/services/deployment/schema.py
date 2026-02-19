@@ -361,17 +361,10 @@ class BaseDeploymentDataUpdate(BaseModel):
 
 class DeploymentUpdate(BaseModel):
     """Deployment update payload."""
-    id: str | UUID = Field(description="The id of the deployment to update")
     spec: BaseDeploymentDataUpdate | None = Field(None, description="The metadata of the deployment")
     snapshot: SnapshotDeploymentBindingUpdate | None = Field(None, description="The snapshot of the deployment")
     config: ConfigDeploymentBindingUpdate | None = Field(None, description="The config of the deployment")
 
-    @field_validator("id")
-    @classmethod
-    def validate_deployment_id(cls, v: str | UUID) -> str | UUID:
-        if isinstance(v, str):
-            return _normalize_and_validate_id(v, field_name="id")
-        return v
 
 
 class DeploymentUpdateResult(BaseModel):

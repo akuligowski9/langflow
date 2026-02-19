@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import uuid
 import zipfile
 from copy import deepcopy
 from dataclasses import dataclass
@@ -325,16 +326,15 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
         self,
         *,
         user_id: UUID | str,
+        deployment_id: UUID | str,
         update_data: DeploymentUpdate,
         db: Any,
     ) -> DeploymentUpdateResult:
         """Update deployment metadata, snapshot bindings, and/or connection binding."""
-        deployment_id = str(update_data.id)
-        config_id = (
-            str(update_data.config.config_id)
-            if update_data.config and update_data.config.config_id is not None
-            else None
-        )
+        deployment_id = str(deployment_id).strip()
+        if not deployment_id:
+            msg = "'deployment_id' must not be empty or whitespace."
+            raise ValueError(msg)
         clients = await self._get_provider_clients(user_id=user_id, db=db)
         current = clients.agent.get_draft_by_id(deployment_id)
         if not current:
@@ -342,21 +342,39 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
             raise ValueError(msg)
 
         update_payload: dict[str, Any] = {}
+        if update_data.spec:
+            spec_updates = update_data.spec.model_dump(exclude_unset=True)
+            if "name" in spec_updates:
+                update_payload["name"] = spec_updates["name"]
+                update_payload["display_name"] = spec_updates["name"]
+            if "description" in spec_updates:
+                update_payload["description"] = spec_updates["description"]
+
         current_tool_ids = self._extract_agent_tool_ids(current)
         if update_data.snapshot:
             tool_ids_to_remove = set(update_data.snapshot.remove or [])
-            updated_tool_ids = {tool_id for tool_id in current_tool_ids if tool_id not in tool_ids_to_remove}
-            updated_tool_ids.update(update_data.snapshot.add or [])
-            if updated_tool_ids != set(current_tool_ids):
-                update_payload["tools"] = list(updated_tool_ids)
+            updated_tool_ids = [tool_id for tool_id in current_tool_ids if tool_id not in tool_ids_to_remove]
+            for tool_id in update_data.snapshot.add or []:
+                if tool_id not in updated_tool_ids:
+                    updated_tool_ids.append(tool_id)
+            if updated_tool_ids != current_tool_ids:
+                update_payload["tools"] = updated_tool_ids
 
-        if config_id:
-            connection = clients.connections.get_draft_by_app_id(app_id=config_id)
-            if not connection:
-                msg = f"Connection '{config_id}' not found."
-                raise ValueError(msg)
-            self._validate_connection(clients.connections, app_id=config_id)
-            update_payload["connection_ids"] = [connection.connection_id]
+        if update_data.config and "config_id" in update_data.config.model_fields_set:
+            config_id = (
+                str(update_data.config.config_id)
+                if update_data.config.config_id is not None
+                else None
+            )
+            if config_id is None:
+                update_payload["connection_ids"] = []
+            else:
+                connection = clients.connections.get_draft_by_app_id(app_id=config_id)
+                if not connection:
+                    msg = f"Connection '{config_id}' not found."
+                    raise ValueError(msg)
+                self._validate_connection(clients.connections, app_id=config_id)
+                update_payload["connection_ids"] = [connection.connection_id]
 
         if update_payload:
             clients.agent.update(deployment_id, update_payload)
@@ -371,35 +389,25 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
         db: Any,
     ) -> DeploymentRedeployResult:
         """Trigger a deployment release for the agent in draft environment."""
-        clients = await self._get_provider_clients(user_id=user_id, db=db)
-        environment_id = self._resolve_draft_environment_id(clients.agent, deployment_id)
-        deployed = clients.agent.deploy(agent_id=deployment_id, environment_id=environment_id)
-        return DeploymentRedeployResult(
-            id=deployment_id,
-            status="success" if deployed else "failed",
-            provider_result={"environment_id": environment_id},
-        )
+        raise NotImplementedError
 
     async def clone_deployment(
         self,
         deployment_id: str,
         *,
+        deployment_type: DeploymentType,
         user_id: UUID | str,
         db: Any,
     ) -> DeploymentItem:
-        """Clone an existing deployment by creating a new agent."""
-        clients = await self._get_provider_clients(user_id=user_id, db=db)
-        current = clients.agent.get_draft_by_id(deployment_id)
-        if not current:
-            msg = f"Deployment '{deployment_id}' not found."
-            raise ValueError(msg)
+        """Clone an existing deployment."""
+        if deployment_type is not DeploymentType.AGENT:
+            msg = (
+                f"{ErrorPrefix.CLONE.value}"
+                f"Deployment type '{deployment_type.value}' is not supported for watsonx Orchestrate."
+            )
+            raise InvalidDeploymentTypeError(message=msg)
 
-        payload = self._build_agent_clone_payload(current)
-        created = clients.agent.create(payload)
-        if not created.id:
-            msg = "WXO did not return an agent id for clone operation."
-            raise ValueError(msg)
-        return await self.get_deployment(created.id, user_id=user_id, db=db)
+        raise NotImplementedError
 
     async def undeploy_deployment(
         self,
@@ -410,8 +418,7 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
     ) -> None:
         """Undeploy a deployment."""
         raise NotImplementedError
-        # clients = await self._get_provider_clients(user_id=user_id, db=db)
-        # clients.agent.undeploy(deployment_id)
+
 
     async def delete_deployment(
         self,
@@ -966,14 +973,6 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
             "llm": "groq/openai/gpt-oss-120b",
         }
 
-    def _build_agent_clone_payload(self, current: dict[str, Any]) -> dict[str, Any]:
-        payload = deepcopy(current) # TODO: deepcopy is not necessary here
-        payload.pop("id", None)
-        payload.pop("created_at", None)
-        payload.pop("updated_at", None)
-        # TODO: handle unique naming if "<name>_clone" already exists.
-        payload["name"] = f"{payload.get('name', 'agent')}_clone"
-        return payload
 
     def _extract_agent_tool_ids(self, agent: dict[str, Any]) -> list[str]:
         # Shape source:

@@ -100,6 +100,7 @@ class BaseDeploymentService(Service):
         self,
         *,
         user_id: UUID | str,
+        deployment_id: UUID | str,
         update_data: DeploymentUpdate,
         db: Any,
     ) -> DeploymentUpdateResult:
@@ -121,6 +122,7 @@ class BaseDeploymentService(Service):
         *,
         user_id: UUID | str,
         deployment_id: str,
+        deployment_type: DeploymentType,
         db: Any,
     ) -> DeploymentItem:
         """Create a new deployment using the same inputs as the source."""
