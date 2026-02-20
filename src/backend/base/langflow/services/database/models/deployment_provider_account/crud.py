@@ -18,7 +18,6 @@ async def get_provider_account_by_id_for_user(
     account_id: UUID | str,
     user_id: UUID | str,
 ) -> DeploymentProviderAccount | None:
-
     account_uuid = get_uuid(account_id)
     user_uuid = get_uuid(user_id)
 

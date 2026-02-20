@@ -249,7 +249,6 @@ class DeploymentService(BaseDeploymentService):
         """Return snapshot payload by provider ID."""
         raise NotImplementedError
 
-
     @abstractmethod
     async def delete_snapshot(
         self,
@@ -260,7 +259,6 @@ class DeploymentService(BaseDeploymentService):
     ) -> None:
         """Delete a provider snapshot."""
         raise NotImplementedError
-
 
     @abstractmethod
     async def teardown(self) -> None:
