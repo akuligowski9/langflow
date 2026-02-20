@@ -22,10 +22,10 @@ if TYPE_CHECKING:
         DeploymentCreate,
         DeploymentCreateResult,
         DeploymentDeleteResult,
-        DeploymentHealthResult,
         DeploymentItem,
         DeploymentList,
-        DeploymentRedeployResult,
+        DeploymentRedeploymentResult,
+        DeploymentStatusResult,
         DeploymentType,
         DeploymentUpdate,
         DeploymentUpdateResult,
@@ -123,12 +123,12 @@ class DeploymentService(BaseDeploymentService):
         user_id: UUID | str,
         deployment_id: str,
         db: Any,
-    ) -> DeploymentRedeployResult:
+    ) -> DeploymentRedeploymentResult:
         """Re-apply current deployment inputs without changing them."""
         raise NotImplementedError
 
     @abstractmethod
-    async def clone_deployment(
+    async def duplicate_deployment(
         self,
         *,
         user_id: UUID | str,
@@ -151,13 +151,13 @@ class DeploymentService(BaseDeploymentService):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_deployment_health(
+    async def get_deployment_status(
         self,
         *,
         user_id: UUID | str,
         deployment_id: str,
         db: Any,
-    ) -> DeploymentHealthResult:
+    ) -> DeploymentStatusResult:
         """Return provider-reported health/status for the deployment."""
         raise NotImplementedError
 
@@ -197,6 +197,7 @@ class DeploymentService(BaseDeploymentService):
     async def update_deployment_config(
         self,
         *,
+        config_id: str,
         update_data: ConfigUpdate,
         user_id: UUID | str,
         db: Any,

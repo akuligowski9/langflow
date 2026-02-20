@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from lfx.services.base import Service
 
 if TYPE_CHECKING:
-    from lfx.services.deployment.schema import DeploymentProviderId
+    from uuid import UUID
+
+    from lfx.services.deployment.schema import DeploymentAccountId
     from lfx.services.interfaces import DeploymentServiceProtocol
 
 
@@ -28,12 +30,14 @@ class BaseDeploymentRouterService(Service):
         return "deployment_router_service"
 
     @abstractmethod
-    def resolve_adapter(
+    async def resolve_adapter(
         self,
         *,
-        provider_id: DeploymentProviderId,
+        account_id: DeploymentAccountId,
+        user_id: UUID | str,
+        db: Any,
     ) -> DeploymentServiceProtocol:
-        """Resolve and return the deployment adapter for provider_id."""
+        """Resolve and return the deployment adapter for a provider account."""
 
     @abstractmethod
     def list_adapter_keys(self) -> list[str]:

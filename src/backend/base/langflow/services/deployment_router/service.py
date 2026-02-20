@@ -4,18 +4,26 @@ from __future__ import annotations
 
 import importlib
 import inspect
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from lfx.services.deployment.exceptions import DeploymentError
 from lfx.services.deployment_router.base import BaseDeploymentRouterService
+from lfx.services.deployment_router.context import set_current_deployment_account_id
+from lfx.services.deployment_router.exceptions import (
+    DeploymentAccountNotFoundError,
+    DeploymentAdapterNotRegisteredError,
+    DeploymentRouterError,
+)
 from lfx.services.deployment_router.registry import get_deployment_adapter_registry
 from lfx.services.deps import get_service
 from lfx.services.schema import ServiceType
 
 if TYPE_CHECKING:
-    from lfx.services.deployment.schema import DeploymentProviderId
+    from uuid import UUID
+
+    from lfx.services.deployment.schema import DeploymentAccountId
     from lfx.services.interfaces import DeploymentServiceProtocol
     from lfx.services.settings.service import SettingsService
+    from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 class DeploymentRouterService(BaseDeploymentRouterService):
@@ -34,12 +42,16 @@ class DeploymentRouterService(BaseDeploymentRouterService):
         self._adapter_registry.discover_sub_services(config_dir=config_dir)
         self.set_ready()
 
-    def resolve_adapter(
+    async def resolve_adapter(
         self,
         *,
-        provider_id: DeploymentProviderId,
+        account_id: DeploymentAccountId,
+        user_id: UUID | str,
+        db: Any,
     ) -> DeploymentServiceProtocol:
-        return self._get_adapter(provider_id)
+        set_current_deployment_account_id(account_id)
+        adapter_key = await self._resolve_adapter_key(account_id=account_id, user_id=user_id, db=db)
+        return self._get_adapter(adapter_key=adapter_key, account_id=account_id)
 
     def list_adapter_keys(self) -> list[str]:
         return self._adapter_registry.list_sub_service_keys()
@@ -51,27 +63,49 @@ class DeploymentRouterService(BaseDeploymentRouterService):
                 await teardown_result
         self._adapter_instances = {}
 
-    def _get_adapter(self, provider_id: DeploymentProviderId) -> DeploymentServiceProtocol:
-        adapter_key = self._resolve_adapter_key(provider_id)
+    def _get_adapter(self, *, adapter_key: str, account_id: DeploymentAccountId) -> DeploymentServiceProtocol:
         if adapter_key in self._adapter_instances:
             return self._adapter_instances[adapter_key]
 
         adapter_class = self._adapter_registry.get_sub_service_class(adapter_key)
         if adapter_class is None:
             msg = (
-                f"No deployment adapter registered for provider_id '{provider_id}' "
+                f"No deployment adapter registered for account_id '{account_id}' "
                 f"(resolved adapter key '{adapter_key}')."
             )
-            raise DeploymentError(message=msg)
+            raise DeploymentAdapterNotRegisteredError(message=msg)
 
         instance = self._instantiate_adapter(adapter_class)
         self._adapter_instances[adapter_key] = instance
         return instance
 
-    def _resolve_adapter_key(self, provider_id: DeploymentProviderId) -> str:
-        # Placeholder strategy for initial API flow: provider_id maps directly to
-        # deployment adapter key. A provider table lookup can be introduced later.
-        return str(provider_id).strip()
+    async def _resolve_adapter_key(
+        self,
+        *,
+        account_id: DeploymentAccountId,
+        user_id: UUID | str,
+        db: AsyncSession,
+    ) -> str:
+        from langflow.services.database.models.deployment_provider_account.crud import (
+            get_provider_account_by_id_for_user,
+        )
+
+        provider_account = await get_provider_account_by_id_for_user(
+            db,
+            account_id=account_id,
+            user_id=user_id,
+        )
+        if provider_account is None:
+            msg = (
+                f"Deployment provider account '{account_id}' not found. "
+            )
+            raise DeploymentAccountNotFoundError(message=msg)
+
+        adapter_key = provider_account.provider_key.strip()
+        if not adapter_key:
+            msg = f"Deployment provider account '{account_id}' has no provider_key configured."
+            raise DeploymentRouterError(message=msg)
+        return adapter_key
 
     def _preload_builtin_adapter_modules(self) -> None:
         """Import built-in adapter modules so decorator registration is deterministic."""
@@ -104,6 +138,6 @@ class DeploymentRouterService(BaseDeploymentRouterService):
                 f"Failed to instantiate adapter '{adapter_class.__name__}': "
                 f"unresolved required dependency '{name}'."
             )
-            raise DeploymentError(message=msg)
+            raise DeploymentRouterError(message=msg)
 
         return adapter_class(**dependencies)

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from lfx.services.deployment_router.base import BaseDeploymentRouterService
 from lfx.services.registry import register_service
 from lfx.services.schema import ServiceType
 
 if TYPE_CHECKING:
-    from lfx.services.deployment.schema import DeploymentProviderId
+    from uuid import UUID
+
+    from lfx.services.deployment.schema import DeploymentAccountId
     from lfx.services.interfaces import DeploymentServiceProtocol
 
 
@@ -25,11 +27,14 @@ class DeploymentRouterService(BaseDeploymentRouterService):
     def name(self) -> str:
         return ServiceType.DEPLOYMENT_ROUTER_SERVICE.value
 
-    def resolve_adapter(
+    async def resolve_adapter(
         self,
         *,
-        provider_id: DeploymentProviderId,  # noqa: ARG002
+        account_id: DeploymentAccountId,
+        user_id: UUID | str,
+        db: Any,
     ) -> DeploymentServiceProtocol:
+        _ = (account_id, user_id, db)
         raise NotImplementedError
 
     def list_adapter_keys(self) -> list[str]:

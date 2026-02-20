@@ -10,10 +10,7 @@ DeploymentProviderName = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=128),
 ] # the name of the deployment provider.
 
-DeploymentProviderId = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=128),
-] # the unique provider/account routing id for deployment router resolution.
+DeploymentAccountId = UUID  # primary key of a deployment provider account registration.
 
 AccountId = Annotated[
     str,
@@ -260,17 +257,9 @@ ConfigItem = Annotated[
 
 class ConfigUpdate(BaseModel):
     """Config update payload."""
-    id: str | UUID = Field(description="The id of the config")
     name: str | None = Field(None, description="The name of the config")
     description: str | None = Field(None, description="The description of the config")
     environment_variables: dict[str, str] | None = Field(None, description="Environment variables")
-
-    @field_validator("id")
-    @classmethod
-    def validate_config_id(cls, v: str | UUID) -> str | UUID:
-        if isinstance(v, str):
-            return _normalize_and_validate_id(v, field_name="id")
-        return v
 
 
 class ConfigDeploymentBindingUpdate(BaseModel):
@@ -375,17 +364,17 @@ class DeploymentUpdateResult(BaseModel):
     )
 
 
-class DeploymentRedeployResult(BaseModel):
-    """Model representing a result for a deployment redeploy operation."""
+class DeploymentRedeploymentResult(BaseModel):
+    """Model representing a deployment redeployment operation result."""
     id: UUID | str = Field(description="The id of the redeployed deployment")
     status: str = Field(description="The deployment status reported by the provider")
     provider_result: dict | None = Field(
-        None, description="The result of the deployment redeploy operation from the provider"
+        None, description="The result of the deployment redeployment operation from the provider"
     )
 
 
-class DeploymentHealthResult(BaseModel):
-    """Model representing a deployment health/status response."""
+class DeploymentStatusResult(BaseModel):
+    """Model representing a deployment status response."""
     id: UUID | str = Field(description="The id of the deployment")
     status: str | None = Field(None, description="The normalized deployment health status")
     provider_data: dict | None = Field(None, description="The provider health payload")

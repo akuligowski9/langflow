@@ -18,14 +18,14 @@ if TYPE_CHECKING:
         ConfigListResult,
         ConfigResult,
         ConfigUpdate,
+        DeploymentAccountId,
         DeploymentCreate,
         DeploymentCreateResult,
         DeploymentDeleteResult,
-        DeploymentHealthResult,
         DeploymentItem,
         DeploymentList,
-        DeploymentProviderId,
-        DeploymentRedeployResult,
+        DeploymentRedeploymentResult,
+        DeploymentStatusResult,
         DeploymentType,
         DeploymentUpdate,
         DeploymentUpdateResult,
@@ -299,12 +299,12 @@ class DeploymentServiceProtocol(Protocol):
         user_id: UUID | str,
         deployment_id: str,
         db: Any,
-    ) -> DeploymentRedeployResult:
+    ) -> DeploymentRedeploymentResult:
         """Re-apply current deployment inputs without changing them."""
         ...
 
     @abstractmethod
-    async def clone_deployment(
+    async def duplicate_deployment(
         self,
         *,
         user_id: UUID | str,
@@ -327,13 +327,13 @@ class DeploymentServiceProtocol(Protocol):
         ...
 
     @abstractmethod
-    async def get_deployment_health(
+    async def get_deployment_status(
         self,
         *,
         user_id: UUID | str,
         deployment_id: str,
         db: Any,
-    ) -> DeploymentHealthResult:
+    ) -> DeploymentStatusResult:
         """Return provider-reported health/status for the deployment."""
         ...
 
@@ -373,6 +373,7 @@ class DeploymentServiceProtocol(Protocol):
     async def update_deployment_config(
         self,
         *,
+        config_id: str,
         update_data: ConfigUpdate,
         user_id: UUID | str,
         db: Any,
@@ -440,12 +441,14 @@ class DeploymentRouterServiceProtocol(Protocol):
     """Protocol for deployment adapter resolver services."""
 
     @abstractmethod
-    def resolve_adapter(
+    async def resolve_adapter(
         self,
         *,
-        provider_id: DeploymentProviderId,
+        account_id: DeploymentAccountId,
+        user_id: UUID | str,
+        db: Any,
     ) -> DeploymentServiceProtocol:
-        """Resolve and return adapter for a provider routing ID."""
+        """Resolve and return adapter for a provider account owned by a user."""
         ...
 
     @abstractmethod

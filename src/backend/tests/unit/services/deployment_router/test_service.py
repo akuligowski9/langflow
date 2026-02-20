@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
-
 from langflow.services.deployment_router.service import DeploymentRouterService
-from lfx.services.deployment.exceptions import DeploymentError
+from lfx.services.deployment_router.exceptions import (
+    DeploymentAccountNotFoundError,
+    DeploymentAdapterNotRegisteredError,
+    DeploymentRouterError,
+)
 from lfx.services.schema import ServiceType
 
 
@@ -63,7 +67,8 @@ def test_initializes_registry_and_preloads_builtin_modules(monkeypatch):
     assert imported_modules == ["langflow.services.deployment.watsonx_orchestrate"]
 
 
-def test_resolve_adapter_caches_instances(monkeypatch):
+@pytest.mark.anyio
+async def test_resolve_adapter_caches_instances(monkeypatch):
     registry = DummyRegistry()
     monkeypatch.setattr(
         "langflow.services.deployment_router.service.get_deployment_adapter_registry",
@@ -80,21 +85,37 @@ def test_resolve_adapter_caches_instances(monkeypatch):
     registry.sub_services["watsonx-orchestrate"] = DummyAdapter
     service = DeploymentRouterService(DummySettingsService())
 
-    first = service.resolve_adapter(provider_id="watsonx-orchestrate")
-    second = service.resolve_adapter(provider_id="  watsonx-orchestrate  ")
+    async def mock_resolve_adapter_key(*, account_id, user_id, db):  # noqa: ARG001
+        return "watsonx-orchestrate"
+
+    monkeypatch.setattr(service, "_resolve_adapter_key", mock_resolve_adapter_key)
+    account_id = uuid4()
+    user_id = uuid4()
+    db = object()
+    first = await service.resolve_adapter(account_id=account_id, user_id=user_id, db=db)
+    second = await service.resolve_adapter(account_id=account_id, user_id=user_id, db=db)
 
     assert first is second
 
 
-def test_resolve_adapter_raises_for_unknown_provider(monkeypatch):
+@pytest.mark.anyio
+async def test_resolve_adapter_raises_for_unknown_provider(monkeypatch):
     monkeypatch.setattr(
         "langflow.services.deployment_router.service.get_deployment_adapter_registry",
         lambda: DummyRegistry(),
     )
     service = DeploymentRouterService(DummySettingsService())
+    account_id = uuid4()
+    user_id = uuid4()
+    db = object()
 
-    with pytest.raises(DeploymentError, match="No deployment adapter registered"):
-        service.resolve_adapter(provider_id="missing-adapter")
+    async def mock_resolve_adapter_key(*, account_id, user_id, db):  # noqa: ARG001
+        return "missing-adapter"
+
+    monkeypatch.setattr(service, "_resolve_adapter_key", mock_resolve_adapter_key)
+
+    with pytest.raises(DeploymentAdapterNotRegisteredError, match="No deployment adapter registered"):
+        await service.resolve_adapter(account_id=account_id, user_id=user_id, db=db)
 
 
 def test_list_adapter_keys_delegates_to_registry(monkeypatch):
@@ -150,7 +171,7 @@ def test_instantiate_adapter_raises_for_unresolved_required_dependency(monkeypat
         def teardown(self):
             return None
 
-    with pytest.raises(DeploymentError, match="unresolved required dependency"):
+    with pytest.raises(DeploymentRouterError, match="unresolved required dependency"):
         service._instantiate_adapter(Adapter)
 
 
@@ -173,4 +194,44 @@ async def test_teardown_handles_sync_and_async_adapter_teardown(monkeypatch):
     assert AdapterWithSyncTeardown.teardown_called == 1
     assert AdapterWithAsyncTeardown.teardown_called == 1
     assert service._adapter_instances == {}
+
+
+@pytest.mark.anyio
+async def test_resolve_adapter_key_requires_owned_provider_account(monkeypatch):
+    monkeypatch.setattr(
+        "langflow.services.deployment_router.service.get_deployment_adapter_registry",
+        lambda: DummyRegistry(),
+    )
+    service = DeploymentRouterService(DummySettingsService())
+
+    async def mock_get_provider_account_by_id_for_user(db, *, account_id, user_id):  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr(
+        "langflow.services.database.models.deployment_provider_account.crud.get_provider_account_by_id_for_user",
+        mock_get_provider_account_by_id_for_user,
+    )
+
+    with pytest.raises(DeploymentAccountNotFoundError, match="not found"):
+        await service._resolve_adapter_key(account_id=uuid4(), user_id=uuid4(), db=object())
+
+
+@pytest.mark.anyio
+async def test_resolve_adapter_key_returns_provider_key(monkeypatch):
+    monkeypatch.setattr(
+        "langflow.services.deployment_router.service.get_deployment_adapter_registry",
+        lambda: DummyRegistry(),
+    )
+    service = DeploymentRouterService(DummySettingsService())
+
+    async def mock_get_provider_account_by_id_for_user(db, *, account_id, user_id):  # noqa: ARG001
+        return SimpleNamespace(provider_key="  watsonx-orchestrate  ")
+
+    monkeypatch.setattr(
+        "langflow.services.database.models.deployment_provider_account.crud.get_provider_account_by_id_for_user",
+        mock_get_provider_account_by_id_for_user,
+    )
+
+    adapter_key = await service._resolve_adapter_key(account_id=uuid4(), user_id=uuid4(), db=object())
+    assert adapter_key == "watsonx-orchestrate"
 

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import io
 import json
-import uuid
 import zipfile
-from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -50,10 +48,10 @@ from lfx.services.deployment.schema import (
     DeploymentCreate,
     DeploymentCreateResult,
     DeploymentDeleteResult,
-    DeploymentHealthResult,
     DeploymentItem,
     DeploymentList,
-    DeploymentRedeployResult,
+    DeploymentRedeploymentResult,
+    DeploymentStatusResult,
     DeploymentType,
     DeploymentUpdate,
     DeploymentUpdateResult,
@@ -67,9 +65,13 @@ from lfx.services.deployment.schema import (
     SnapshotListResult,
     SnapshotResult,
 )
+from lfx.services.deployment_router.context import get_current_deployment_account_id
 from lfx.services.deployment_router.registry import register_deployment_adapter
 from lfx.services.schema import ServiceType
 
+from langflow.services.database.models.deployment_provider_account.crud import (
+    get_provider_account_by_id_for_user,
+)
 from langflow.services.deps import get_variable_service
 from langflow.utils.version import get_version_info
 
@@ -77,7 +79,6 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from ibm_cloud_sdk_core.authenticators import Authenticator
-    from ibm_watsonx_orchestrate_clients.common.credentials import Credentials
     from lfx.services.settings.service import SettingsService
 
 
@@ -87,11 +88,6 @@ DEFAULT_LANGFLOW_TOOL_REQUIREMENTS = ["lfx==0.3.0"]
 DEFAULT_ADAPTER_SNAPSHOT_TYPE = "langflow"
 DEFAULT_ADAPTER_DEPLOYMENT_TYPE = "agent"
 SUPPORTED_ADAPTER_DEPLOYMENT_TYPES = {DEFAULT_ADAPTER_DEPLOYMENT_TYPE}
-
-
-class WxOUserKey(str, Enum):
-    INSTANCE_URL = "DEPLOYMENT_SERVICE_BACKEND_WXO_URL"
-    API_KEY = "DEPLOYMENT_SERVICE_BACKEND_WXO_API_KEY"
 
 
 class WxOAuthURL(str, Enum):
@@ -145,8 +141,8 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
     def __init__(self, settings_service: SettingsService):
         super().__init__()
         self.settings_service = settings_service
-        # TODO: cache clients per tenant, the current approach assumes only one tenant
-        self._client_manager: WxOClient | None = None
+        # TODO: LRU + TTL hybrid cache
+        self._client_managers: dict[str, WxOClient] = {}
         self.set_ready()
 
     async def create_deployment(
@@ -387,19 +383,19 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
         *,
         user_id: UUID | str,
         db: Any,
-    ) -> DeploymentRedeployResult:
-        """Trigger a deployment release for the agent in draft environment."""
+    ) -> DeploymentRedeploymentResult:
+        """Trigger a deployment redeployment for the agent in draft environment."""
         raise NotImplementedError
 
-    async def clone_deployment(
+    async def duplicate_deployment(
         self,
-        deployment_id: str,
+        deployment_id: str,  # noqa: ARG002
         *,
         deployment_type: DeploymentType,
-        user_id: UUID | str,
-        db: Any,
+        user_id: UUID | str,  # noqa: ARG002
+        db: Any,  # noqa: ARG002
     ) -> DeploymentItem:
-        """Clone an existing deployment."""
+        """Duplicate an existing deployment."""
         if deployment_type is not DeploymentType.AGENT:
             msg = (
                 f"{ErrorPrefix.CLONE.value}"
@@ -442,13 +438,13 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
 
         return DeploymentDeleteResult(id=deployment_id)
 
-    async def get_deployment_health(
+    async def get_deployment_status(
         self,
         deployment_id: str,
         *,
         user_id: UUID | str,
         db: Any,
-    ) -> DeploymentHealthResult:
+    ) -> DeploymentStatusResult:
         """Get deployment health for draft agents from the provider."""
         clients = await self._get_provider_clients(user_id=user_id, db=db)
         agent = clients.agent.get_draft_by_id(deployment_id)
@@ -456,7 +452,7 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
             msg = f"Deployment '{deployment_id}' not found."
             raise ValueError(msg)
 
-        return DeploymentHealthResult(
+        return DeploymentStatusResult(
             id=deployment_id,
             status="healthy",
             provider_data={
@@ -567,12 +563,12 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
     async def update_deployment_config(
         self,
         *,
+        config_id: str,
         update_data: ConfigUpdate,
         user_id: UUID | str,
         db: Any,
     ) -> ConfigResult:
         """Update an existing draft config by app_id."""
-        config_id = str(update_data.id)
         existing = await self.get_deployment_config(config_id, user_id=user_id, db=db)
 
         environment_variables = update_data.environment_variables or {}
@@ -692,7 +688,7 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
 
     async def teardown(self) -> None:
         """Teardown provider-specific resources."""
-        return
+        self._client_managers.clear()
 
     async def _create_agent_deployment(
         self,
@@ -774,11 +770,15 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
         user_id: UUID | str,
         db: Any,
     ) -> WxOClient:
-        if self._client_manager is not None:
-            return self._client_manager
+        account_id = self._get_current_account_id()
+        cache_key = str(account_id)
+        if cache_key in self._client_managers:
+            return self._client_managers[cache_key]
 
         credentials: WxOCredentials = await self._resolve_wxo_client_credentials(
-            user_id=user_id, db=db
+            user_id=user_id,
+            db=db,
+            account_id=account_id,
         )
 
         instance_url: str = credentials.instance_url
@@ -789,29 +789,42 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
 ,
         )
 
-        self._client_manager = WxOClient(
+        self._client_managers[cache_key] = WxOClient(
             tool=ToolClient(base_url=instance_url, authenticator=authenticator),
             connections=ConnectionsClient(base_url=instance_url, authenticator=authenticator),
             agent=AgentClient(base_url=instance_url, authenticator=authenticator),
         )
 
-        return self._client_manager
+        return self._client_managers[cache_key]
 
     async def _resolve_wxo_client_credentials(
         self,
         *,
         user_id: UUID | str,
         db: Any,
-    ) -> Credentials:
-        """Resolve Watsonx Orchestrate client credentials from environment variables."""
+        account_id: UUID,
+    ) -> WxOCredentials:
+        """Resolve Watsonx Orchestrate client credentials from deployment provider account."""
         try:
-            instance_url = await self._resolve_variable_value(
-                WxOUserKey.INSTANCE_URL.value, user_id=user_id, db=db
+            provider_account = await get_provider_account_by_id_for_user(
+                db,
+                account_id=account_id,
+                user_id=user_id,
             )
+            if provider_account is None:
+                msg = "Failed to find deployment provider account credentials."
+                raise CredentialResolutionError(message=msg)
 
-            api_key = await self._resolve_variable_value(
-                WxOUserKey.API_KEY.value, user_id=user_id, db=db
-            )
+            provider_key = (provider_account.provider_key or "").strip()
+            if provider_key != self.provider_name:
+                msg = "Selected deployment provider account is not configured for watsonx-orchestrate."
+                raise CredentialResolutionError(message=msg)
+
+            instance_url = (provider_account.backend_url or "").strip()
+            api_key = (provider_account.api_key or "").strip()
+            if not instance_url or not api_key:
+                msg = "Watsonx Orchestrate backend URL and API key must be configured."
+                raise CredentialResolutionError(message=msg)
 
         # please ensure that when raising or re-raising an exception,
         # that the message does not leak sensitive information
@@ -825,6 +838,13 @@ class WatsonxOrchestrateDeploymentService(BaseDeploymentService):
             raise CredentialResolutionError(message=msg) from None
 
         return WxOCredentials(instance_url=instance_url, api_key=api_key)
+
+    def _get_current_account_id(self) -> UUID:
+        account_id = get_current_deployment_account_id()
+        if account_id is None:
+            msg = "Deployment account context is not available for adapter resolution."
+            raise CredentialResolutionError(message=msg)
+        return account_id
 
     async def _resolve_runtime_credentials(
         self,
